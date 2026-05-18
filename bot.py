@@ -69,7 +69,7 @@ def _shift_summary_text(stats: dict, shift_date: date,
 async def _close_shift_and_notify(bot: Bot, chat_id: int,
                                    shift_date_str: str, reason: str,
                                    fin: dict = None):
-    """Закрывает смену, шлёт итог в чат и Excel администраторам."""
+    """Закрывает смену, шлёт итог в чат."""
     shift_date = date.fromisoformat(shift_date_str)
 
     closed = db.close_shift(
@@ -93,28 +93,6 @@ async def _close_shift_and_notify(bot: Bot, chat_id: int,
     await bot.send_message(chat_id=chat_id,
                            text=header + summary,
                            parse_mode=ParseMode.MARKDOWN)
-
-    # Excel + итог администраторам
-    if stats["count"] > 0:
-        records = db.get_records(chat_id=chat_id, day=shift_date)
-        filepath = exporter.export(records, shift_date)
-        for admin_id in ADMIN_IDS:
-            try:
-                await bot.send_message(
-                    chat_id=admin_id,
-                    text=f"📋 Чат `{chat_id}` — смена {shift_date.strftime('%d.%m.%Y')}\n\n" + summary,
-                    parse_mode=ParseMode.MARKDOWN
-                )
-                with open(filepath, "rb") as f:
-                    await bot.send_document(
-                        chat_id=admin_id,
-                        document=f,
-                        filename=os.path.basename(filepath),
-                        caption=f"Excel — {shift_date.strftime('%d.%m.%Y')} | {stats['count']} записей"
-                    )
-            except Exception as e:
-                logger.warning(f"Не смог отправить итог администратору {admin_id}: {e}")
-        os.remove(filepath)
 
 
 # ======================================================================
@@ -516,6 +494,58 @@ async def cmd_stats_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def send_daily_excel(bot: Bot, export_date: date):
+    """Собирает данные по всем чатам за день и шлёт один Excel админам."""
+    records = db.get_records(day=export_date)
+    if not records:
+        logger.info("Нет записей за сегодня, Excel не отправляю.")
+        return
+
+    # Группируем записи по chat_id
+    chat_data = {}
+    for r in records:
+        cid = r["chat_id"]
+        if cid not in chat_data:
+            chat_data[cid] = {"records": [], "stats": None, "fin": None, "name": None}
+        chat_data[cid]["records"].append(r)
+
+    # Получаем имена чатов и статистику
+    for cid in chat_data:
+        try:
+            chat = await bot.get_chat(cid)
+            chat_data[cid]["name"] = chat.title or f"Чат {cid}"
+        except Exception:
+            chat_data[cid]["name"] = f"Чат {cid}"
+        
+        chat_data[cid]["stats"] = db.get_stats(chat_id=cid, day=export_date)
+        
+        shift = db.get_shift(cid, export_date.isoformat())
+        if shift:
+            chat_data[cid]["fin"] = {
+                "fr_total": shift.get("fr_total"),
+                "fr_mine": shift.get("fr_mine"),
+                "fr_transfer": shift.get("fr_transfer"),
+            }
+
+    # Экспортируем мульти-чат файл
+    filepath = exporter.export_multi_chat(chat_data, export_date)
+    
+    # Отправляем админам
+    for admin_id in ADMIN_IDS:
+        try:
+            with open(filepath, "rb") as f:
+                await bot.send_document(
+                    chat_id=admin_id,
+                    document=f,
+                    filename=os.path.basename(filepath),
+                    caption=f"📋 Отчёт за {export_date.strftime('%d.%m.%Y')} ({len(chat_data)} точек)"
+                )
+        except Exception as e:
+            logger.warning(f"Не смог отправить Excel админу {admin_id}: {e}")
+    
+    os.remove(filepath)
+
+
 async def cmd_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if ADMIN_IDS and update.effective_user.id not in ADMIN_IDS:
         await update.message.reply_text("⛔ Только для администраторов.")
@@ -531,19 +561,8 @@ async def cmd_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         export_date = today_msk()
 
-    records = db.get_records(day=export_date)
-    if not records:
-        await update.message.reply_text(f"📭 Записей за {export_date.strftime('%d.%m.%Y')} нет.")
-        return
-
-    filepath = exporter.export(records, export_date)
-    with open(filepath, "rb") as f:
-        await update.message.reply_document(
-            document=f,
-            filename=os.path.basename(filepath),
-            caption=f"📋 {export_date.strftime('%d.%m.%Y')} — {len(records)} записей",
-        )
-    os.remove(filepath)
+    await update.message.reply_text("⏳ Формирую общий отчёт по всем точкам...")
+    await send_daily_excel(context.bot, export_date)
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -567,7 +586,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ======================================================================
 
 async def auto_close_shifts(context: ContextTypes.DEFAULT_TYPE):
-    """Джоб: закрывает все незакрытые смены за сегодня."""
+    """Джоб: закрывает все незакрытые смены за сегодня и шлёт общий Excel."""
     today_str = today_msk().isoformat()
     open_shifts = db.get_open_shifts()
 
@@ -582,6 +601,13 @@ async def auto_close_shifts(context: ContextTypes.DEFAULT_TYPE):
             reason="auto_midnight",
             fin=None,
         )
+    
+    # Ждём пару секунд, чтобы база успела обновиться
+    import asyncio
+    await asyncio.sleep(2)
+    
+    # Отправляем общий Excel админам
+    await send_daily_excel(context.bot, today_msk())
 
 
 # ======================================================================

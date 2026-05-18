@@ -1,0 +1,14 @@
+[Unit]
+Description=Freon Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/tg_bot
+ExecStart=/root/tg_bot/venv/bin/python3 bot.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

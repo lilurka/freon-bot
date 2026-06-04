@@ -64,12 +64,46 @@ class Database:
                     car_number    TEXT NOT NULL,
                     freon_volume  INTEGER NOT NULL,
                     money         INTEGER NOT NULL,
+                    payment_type  TEXT,
+                    payment_name  TEXT,
+                    payment_bank  TEXT,
+                    nipple_count  INTEGER DEFAULT 0,
+                    raw_text      TEXT,
+                    created_at    TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now', 'localtime'))
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS refills (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    shift_id      INTEGER NOT NULL REFERENCES shifts(id),
+                    chat_id       INTEGER NOT NULL,
+                    user_id       INTEGER NOT NULL,
+                    username      TEXT,
+                    refill_kg     REAL NOT NULL,
                     raw_text      TEXT,
                     created_at    TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now', 'localtime'))
                 )
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_records_shift ON records(shift_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_refills_shift ON refills(shift_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_shifts_chat_date ON shifts(chat_id, shift_date)")
+            # Миграция для существующих баз
+            try:
+                conn.execute("ALTER TABLE records ADD COLUMN payment_type TEXT")
+            except Exception:
+                pass
+            try:
+                conn.execute("ALTER TABLE records ADD COLUMN nipple_count INTEGER DEFAULT 0")
+            except Exception:
+                pass
+            try:
+                conn.execute("ALTER TABLE records ADD COLUMN payment_name TEXT")
+            except Exception:
+                pass
+            try:
+                conn.execute("ALTER TABLE records ADD COLUMN payment_bank TEXT")
+            except Exception:
+                pass
             conn.commit()
 
     # ------------------------------------------------------------------
@@ -140,15 +174,31 @@ class Database:
 
     def add_record(self, chat_id: int, user_id: int, username: str,
                    car_number: str, freon_volume: int, money: int,
+                   payment_type: str, nipple_count: int = 0,
+                   payment_name: str = None, payment_bank: str = None,
                    raw_text: str = "") -> int:
         shift = self.get_or_create_shift(chat_id)
         with self._get_conn() as conn:
             cursor = conn.execute(
                 """INSERT INTO records
-                   (shift_id, chat_id, user_id, username, car_number, freon_volume, money, raw_text)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (shift_id, chat_id, user_id, username, car_number, freon_volume, money, payment_type, payment_name, payment_bank, nipple_count, raw_text)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (shift["id"], chat_id, user_id, username,
-                 car_number, freon_volume, money, raw_text)
+                 car_number, freon_volume, money, payment_type,
+                 payment_name, payment_bank, nipple_count, raw_text)
+            )
+            conn.commit()
+            return cursor.lastrowid
+
+    def add_refill(self, chat_id: int, user_id: int, username: str,
+                   refill_kg: float, raw_text: str = "") -> int:
+        shift = self.get_or_create_shift(chat_id)
+        with self._get_conn() as conn:
+            cursor = conn.execute(
+                """INSERT INTO refills
+                   (shift_id, chat_id, user_id, username, refill_kg, raw_text)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (shift["id"], chat_id, user_id, username, refill_kg, raw_text)
             )
             conn.commit()
             return cursor.lastrowid
@@ -162,30 +212,79 @@ class Database:
             query = """
                 SELECT COUNT(*) as cnt,
                        COALESCE(SUM(r.freon_volume), 0) as total_freon,
-                       COALESCE(SUM(r.money), 0) as total_money
+                       COALESCE(SUM(r.money), 0) as total_money,
+                       COALESCE(SUM(CASE WHEN r.payment_type = 'нал' THEN r.money ELSE 0 END), 0) as total_nal,
+                       COALESCE(SUM(CASE WHEN r.payment_type = 'безнал' THEN r.money ELSE 0 END), 0) as total_beznal,
+                       COALESCE(SUM(r.nipple_count), 0) as total_nipples
                 FROM records r
                 JOIN shifts s ON s.id = r.shift_id
                 WHERE s.chat_id = ? AND s.shift_date = ?
             """
             params = (chat_id, day_str)
+            refill_query = """
+                SELECT COALESCE(SUM(refill_kg), 0) as total_refill
+                FROM refills f
+                JOIN shifts s ON s.id = f.shift_id
+                WHERE s.chat_id = ? AND s.shift_date = ?
+            """
+            refill_params = (chat_id, day_str)
         else:
             query = """
                 SELECT COUNT(*) as cnt,
                        COALESCE(SUM(r.freon_volume), 0) as total_freon,
-                       COALESCE(SUM(r.money), 0) as total_money
+                       COALESCE(SUM(r.money), 0) as total_money,
+                       COALESCE(SUM(CASE WHEN r.payment_type = 'нал' THEN r.money ELSE 0 END), 0) as total_nal,
+                       COALESCE(SUM(CASE WHEN r.payment_type = 'безнал' THEN r.money ELSE 0 END), 0) as total_beznal,
+                       COALESCE(SUM(r.nipple_count), 0) as total_nipples
                 FROM records r
                 JOIN shifts s ON s.id = r.shift_id
                 WHERE s.shift_date = ?
             """
             params = (day_str,)
+            refill_query = """
+                SELECT COALESCE(SUM(refill_kg), 0) as total_refill
+                FROM refills f
+                JOIN shifts s ON s.id = f.shift_id
+                WHERE s.shift_date = ?
+            """
+            refill_params = (day_str,)
+
+        # Breakdown of безнал by person and bank
+        if chat_id is not None:
+            bd_query = """
+                SELECT r.payment_name, r.payment_bank, SUM(r.money) as total
+                FROM records r
+                JOIN shifts s ON s.id = r.shift_id
+                WHERE s.chat_id = ? AND s.shift_date = ? AND r.payment_type = 'безнал'
+                GROUP BY r.payment_name, r.payment_bank
+                ORDER BY r.payment_name
+            """
+            bd_params = (chat_id, day_str)
+        else:
+            bd_query = """
+                SELECT r.payment_name, r.payment_bank, SUM(r.money) as total
+                FROM records r
+                JOIN shifts s ON s.id = r.shift_id
+                WHERE s.shift_date = ? AND r.payment_type = 'безнал'
+                GROUP BY r.payment_name, r.payment_bank
+                ORDER BY r.payment_name
+            """
+            bd_params = (day_str,)
 
         with self._get_conn() as conn:
             row = conn.execute(query, params).fetchone()
+            refill_row = conn.execute(refill_query, refill_params).fetchone()
+            breakdown_rows = conn.execute(bd_query, bd_params).fetchall()
 
         return {
             "count": row["cnt"],
             "total_freon": row["total_freon"],
             "total_money": row["total_money"],
+            "total_nal": row["total_nal"],
+            "total_beznal": row["total_beznal"],
+            "total_refill": refill_row["total_refill"],
+            "total_nipples": row["total_nipples"],
+            "beznal_breakdown": [{"name": r["payment_name"], "bank": r["payment_bank"], "total": r["total"]} for r in breakdown_rows],
         }
 
     def get_records(self, chat_id: Optional[int] = None,
@@ -213,3 +312,64 @@ class Database:
         with self._get_conn() as conn:
             rows = conn.execute(query, params).fetchall()
         return [dict(r) for r in rows]
+
+    def get_refills(self, chat_id: Optional[int] = None,
+                    day: Optional[date] = None) -> List[Dict]:
+        """Все заправки аппарата за день МСК."""
+        day_str = (day or today_msk()).isoformat()
+
+        if chat_id is not None:
+            query = """
+                SELECT f.* FROM refills f
+                JOIN shifts s ON s.id = f.shift_id
+                WHERE s.chat_id = ? AND s.shift_date = ?
+                ORDER BY f.created_at
+            """
+            params = (chat_id, day_str)
+        else:
+            query = """
+                SELECT f.* FROM refills f
+                JOIN shifts s ON s.id = f.shift_id
+                WHERE s.shift_date = ?
+                ORDER BY f.created_at
+            """
+            params = (day_str,)
+
+        with self._get_conn() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def delete_records_by_car(self, chat_id: int, car_number: str,
+                              day: Optional[date] = None) -> int:
+        """Удалить все записи с указанным номером машины за день.
+        Возвращает количество удалённых записей."""
+        day_str = (day or today_msk()).isoformat()
+        with self._get_conn() as conn:
+            cursor = conn.execute(
+                """
+                DELETE FROM records
+                WHERE chat_id = ? AND car_number = ? AND shift_id IN (
+                    SELECT s.id FROM shifts s
+                    WHERE s.chat_id = ? AND s.shift_date = ?
+                )
+                """,
+                (chat_id, car_number, chat_id, day_str)
+            )
+            conn.commit()
+            return cursor.rowcount
+
+    def get_user_daily_totals(self, chat_id: int, user_id: int,
+                               day: Optional[date] = None) -> Dict:
+        """Сумма нал и безнал 'Себе' для сотрудника за день."""
+        day_str = (day or today_msk()).isoformat()
+        query = """
+            SELECT
+                COALESCE(SUM(CASE WHEN r.payment_type = 'нал' THEN r.money ELSE 0 END), 0) as nal_sum,
+                COALESCE(SUM(CASE WHEN r.payment_type = 'безнал' AND LOWER(r.payment_name) = 'себе' THEN r.money ELSE 0 END), 0) as sebe_sum
+            FROM records r
+            JOIN shifts s ON s.id = r.shift_id
+            WHERE s.chat_id = ? AND s.shift_date = ? AND r.user_id = ?
+        """
+        with self._get_conn() as conn:
+            row = conn.execute(query, (chat_id, day_str, user_id)).fetchone()
+        return {"nal_sum": row[0], "sebe_sum": row[1]}

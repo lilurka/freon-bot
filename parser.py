@@ -169,7 +169,7 @@ class ReportParser:
                 m_bad = MONEY_LINE_RE.search(text)
                 if m_bad:
                     bad_val = int(m_bad.group(1))
-                    if 0 < bad_val < 1000:
+                    if 0 < bad_val < 500:
                         problems["money"] = "too_small"
                     else:
                         problems["money"] = "bad_format"
@@ -249,7 +249,7 @@ class ReportParser:
         val = int(m.group(1))
         if val == 0:
             return 0
-        return val if val >= 1000 and val <= 1_000_000 else None
+        return val if val >= 500 and val <= 1_000_000 else None
 
     def extract_number(self, text: str) -> Optional[int]:
         nums = re.findall(r'\d+', text)

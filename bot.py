@@ -345,8 +345,8 @@ async def ask_clarification(message: Message, partial: dict, context: ContextTyp
     elif "money" in missing:
         if problems.get("money") == "too_small":
             await message.reply_text(
-                f"⚠️ Машина *{car}* — сумма меньше 1000 руб.\n"
-                "Минимальная сумма для записи: *1000 руб.* (0 = гарантия/дозаправка).\n\n"
+                f"⚠️ Машина *{car}* — сумма меньше 500 руб.\n"
+                "Минимальная сумма для записи: *500 руб.* (0 = гарантия/дозаправка).\n\n"
                 f"Правильный формат:\n"
                 f"```\n{example}\n```",
                 parse_mode=ParseMode.MARKDOWN,
@@ -532,7 +532,7 @@ async def handle_clarification_reply(update: Update, context: ContextTypes.DEFAU
 
     elif waiting_for == "money":
         money = parser.extract_number(text)
-        if money is not None and (money == 0 or money >= 1000):
+        if money is not None and (money == 0 or money >= 500):
             partial["money"] = money
             partial["missing"] = [m for m in partial.get("missing", []) if m != "money"]
             context.user_data["partial"] = partial
@@ -540,11 +540,11 @@ async def handle_clarification_reply(update: Update, context: ContextTypes.DEFAU
                 await ask_clarification(message, partial, context)
             else:
                 await _finish_work_report(message, context, partial, chat_id, username)
-        elif money is not None and 0 < money < 1000:
+        elif money is not None and 0 < money < 500:
             car = partial.get("car_number") or "е133уу"
             await message.reply_text(
-                f"⚠️ Сумма меньше 1000 руб.\n"
-                "Минимум: *1000 руб.* (0 = гарантия/дозаправка).\n\n"
+                f"⚠️ Сумма меньше 500 руб.\n"
+                "Минимум: *500 руб.* (0 = гарантия/дозаправка).\n\n"
                 f"Правильный формат:\n"
                 f"```\n{car}\nзалил 450\nвзял 3500\nнал\n```\n",
                 parse_mode=ParseMode.MARKDOWN,

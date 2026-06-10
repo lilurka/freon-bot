@@ -925,10 +925,6 @@ async def cmd_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Удалить все отчёты с указанным номером машины за сегодня."""
-    if ADMIN_IDS and update.effective_user.id not in ADMIN_IDS:
-        await update.message.reply_text("⛔ Только для администраторов.")
-        return
-
     args = context.args
     if not args:
         await update.message.reply_text("⚠️ Формат: /удалить <номер машины>\nПример: /удалить е133уу")

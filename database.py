@@ -160,6 +160,15 @@ class Database:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def get_latest_open_shift(self, chat_id: int) -> Optional[Dict]:
+        """Возвращает последнюю открытую смену для чата (по дате)."""
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM shifts WHERE chat_id = ? AND closed_at IS NULL ORDER BY shift_date DESC LIMIT 1",
+                (chat_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
     def get_shift(self, chat_id: int, shift_date: str) -> Optional[Dict]:
         with self._get_conn() as conn:
             row = conn.execute(
@@ -167,6 +176,18 @@ class Database:
                 (chat_id, shift_date)
             ).fetchone()
         return dict(row) if row else None
+
+    def get_shift_sebe(self, chat_id: int, day: date) -> int:
+        """Сумма безнальных переводов 'себе' по всей смене (все пользователи)."""
+        day_str = day.isoformat()
+        query = """
+            SELECT COALESCE(SUM(r.money), 0)
+            FROM records r
+            JOIN shifts s ON s.id = r.shift_id
+            WHERE s.chat_id = ? AND s.shift_date = ? AND r.payment_type = 'безнал' AND LOWER(r.payment_name) = 'себе'
+        """
+        with self._get_conn() as conn:
+            return conn.execute(query, (chat_id, day_str)).fetchone()[0]
 
     # ------------------------------------------------------------------
     # Записи

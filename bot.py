@@ -185,13 +185,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def _handle_final_report(message: Message, context: ContextTypes.DEFAULT_TYPE, fin: dict,
                                 user_id: int = 0, raw_text: str = ""):
     """Финальный отчёт: закрываем смену."""
-    chat_id    = message.chat_id
-    shift_date = today_msk().isoformat()
-    total      = fin["fr_total"]
+    chat_id = message.chat_id
+    total   = fin["fr_total"]
 
-    totals   = db.get_user_daily_totals(chat_id, user_id, day=today_msk())
-    nal_sum  = totals["nal_sum"]
-    sebe_sum = totals["sebe_sum"]
+    # Берём дату из открытой смены, а не today_msk() — чтобы работало через полночь
+    open_shift = db.get_latest_open_shift(chat_id)
+    if open_shift:
+        shift_date = open_shift["shift_date"]
+        day = date.fromisoformat(shift_date)
+    else:
+        shift_date = today_msk().isoformat()
+        day = today_msk()
+
+    # Считаем нал + себе ПО ВСЕЙ СМЕНЕ (все пользователи, не только закрывающий)
+    stats   = db.get_stats(chat_id=chat_id, day=day)
+    nal_sum = stats["total_nal"]
+    sebe_sum = db.get_shift_sebe(chat_id=chat_id, day=day)
     kept     = nal_sum + sebe_sum
     salary25 = total * 25 // 100
 
@@ -217,6 +226,8 @@ async def _handle_final_report(message: Message, context: ContextTypes.DEFAULT_T
     diff = kept - salary25
     if diff > 0:
         reply_parts.append(f"\n🔁 *К переводу: {diff} руб.*")
+    elif diff < 0:
+        reply_parts.append(f"\n🔸 *К получению: {-diff} руб.*")
     else:
         reply_parts.append(f"\n✅ *Всё в норме, зарплата покрыта*")
 
